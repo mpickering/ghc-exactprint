@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TupleSections, NamedFieldPuns #-}
 module Test.Transform where
 
 import Language.Haskell.GHC.ExactPrint
@@ -24,7 +24,7 @@ import Control.Monad
 import System.FilePath
 import System.IO
 import qualified Data.Map as Map
--- import Data.List
+import Data.List
 import Data.Maybe
 
 import System.IO.Silently
@@ -32,6 +32,7 @@ import System.IO.Silently
 import Test.Common
 
 import Test.HUnit
+import Debug.Trace
 
 transformTests :: [Test]
 transformTests =
@@ -171,8 +172,9 @@ changeLocalDecls ans (GHC.L l p) = do
 changeAddDecl :: Changer
 changeAddDecl ans top = do
   Right (declAnns, decl) <- withDynFlags (\df -> parseDecl df "<interactive>" "nn = n2")
-  -- putStrLn $ "changeDecl:(declAnns,decl)=" ++ showGhc (declAnns,decl)
-  let declAnns' = setPrecedingLines decl 2 0 declAnns
+  putStrLn $ "changeDecl:(declAnns,decl)=" ++ showGhc (declAnns,decl)
+  -- Should use typeclass interface
+  let declAnns' = setPrecedingLinesDecl decl 2 0 declAnns
   -- putStrLn $ "changeDecl:(declAnns',decl)=" ++ showGhc (declAnns',decl)
 
   let (p',(ans',_),_) = runTransform ans doAddDecl
@@ -552,11 +554,12 @@ transformHighLevelTests :: [Test]
 transformHighLevelTests =
   [
     mkTestModChange addLocaLDecl1  "AddLocalDecl1.hs"  "AddLocalDecl1"
+    {-
   , mkTestModChange addLocaLDecl2  "AddLocalDecl2.hs"  "AddLocalDecl2"
   , mkTestModChange addLocaLDecl3  "AddLocalDecl3.hs"  "AddLocalDecl3"
   , mkTestModChange addLocaLDecl4  "AddLocalDecl4.hs"  "AddLocalDecl4"
 
-  , mkTestModChange rmDecl1 "RmDecl1.hs" "RmDecl1"
+   mkTestModChange rmDecl1 "RmDecl1.hs" "RmDecl1"
   , mkTestModChange rmDecl2 "RmDecl2.hs" "RmDecl2"
   , mkTestModChange rmDecl3 "RmDecl3.hs" "RmDecl3"
   , mkTestModChange rmDecl4 "RmDecl4.hs" "RmDecl4"
@@ -569,29 +572,31 @@ transformHighLevelTests =
   , mkTestModChange addHiding2 "AddHiding2.hs" "AddHiding2"
 
   , mkTestModChange cloneDecl1 "CloneDecl1.hs" "CloneDecl1"
+  -}
   ]
 
 -- ---------------------------------------------------------------------
-
 addLocaLDecl1 :: Changer
 addLocaLDecl1 ans lp = do
   Right (declAnns, newDecl@(GHC.L ld (GHC.ValD decl))) <- withDynFlags (\df -> parseDecl df "decl" "nn = 2")
   let declAnns' = setPrecedingLines (GHC.L ld decl) 1 0 declAnns
 
-      doAddLocal = do
-         tlDecs <- hsDecls lp
-         let parent = head tlDecs
-         decls <- hsDecls parent
-         balanceComments parent (head $ tail tlDecs)
+      doAddLocal :: GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
+                 -> Transform (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName))
+      doAddLocal m@(GHC.L ss _) =
+         if ss2pos ss == (4, 1) then
+          do
+            decls <- hsDecls m
+            modifyAnnsT (setPrecedingLines newDecl 1 4)
+            parent' <- replaceDecls m (newDecl:decls)
+            return parent'
+         else return m
 
-         modifyAnnsT (setPrecedingLines newDecl 1 4)
 
-         parent' <- replaceDecls parent (newDecl:decls)
-         replaceDecls lp (parent':tail tlDecs)
 
-  let (lp',(ans',_),_w) = runTransform ans doAddLocal
+  let (lp',(ans',_),_w) = runTransform ans (SYB.everywhereM (SYB.mkM doAddLocal) lp)
   return (mergeAnnList [declAnns',ans'],lp')
-
+{-
 -- ---------------------------------------------------------------------
 
 addLocaLDecl2 :: Changer
@@ -616,7 +621,7 @@ addLocaLDecl2 ans lp = do
          replaceDecls lp (parent':tail tlDecs)
 
   let (lp',(ans',_),_w) = runTransform (mergeAnns ans declAnns) doAddLocal
-  -- putStrLn $ "log:\n" ++ intercalate "\n" _w
+--  putStrLn $ "log:\n" ++ intercalate "\n" _w
   return (ans',lp')
 
 -- ---------------------------------------------------------------------
@@ -665,16 +670,16 @@ addLocaLDecl4 ans lp = do
          setPrecedingLinesT newSig  1 0
          setPrecedingLinesT newDecl 1 0
 
-         -- logDataWithAnnsTr "newSig:" newSig
-         -- logDataWithAnnsTr "newDecl:" newDecl
+         logDataWithAnnsTr "newSig:" newSig
+         logDataWithAnnsTr "newDecl:" newDecl
 
          parent' <- replaceDecls parent (decls++[newSig,newDecl])
          replaceDecls lp (parent':tail tlDecs)
 
-  let (lp',(ans',_),_w) = runTransform (mergeAnnList [ans,declAnns,sigAnns]) doAddLocal
-  -- putStrLn $ "log\n" ++ intercalate "\n" _w
+  let (lp',(ans',_),w) = runTransform (mergeAnnList [ans,declAnns,sigAnns]) doAddLocal
+  putStrLn $ "log\n" ++ intercalate "\n" w
+  --putStrLn (showGhc ans')
   return (ans',lp')
-
 -- ---------------------------------------------------------------------
 
 rmDecl1 :: Changer
@@ -700,7 +705,6 @@ rmDecl1 ans lp = do
   return (ans',lp')
 
 -- ---------------------------------------------------------------------
-
 rmDecl2 :: Changer
 rmDecl2 ans lp = do
   let
@@ -872,6 +876,8 @@ cloneDecl1 ans lp = do
          replaceDecls lp (d1:d2:d2':ds)
 
   let (lp',(ans',_),_w) = runTransform ans doChange
+  traceShowM ans'
   return (ans',lp')
 
 -- ---------------------------------------------------------------------
+-}

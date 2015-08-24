@@ -122,9 +122,9 @@ testAfter old new =
 testBefore old new =
                      (srcSpanEndLine new > srcSpanEndLine old) ||
                       (srcSpanEndLine new == srcSpanEndLine old &&
-                       srcSpanEndColumn new > srcSpanEndColumn old) ||
-                      (GHC.srcSpanEnd new == GHC.srcSpanEnd old &&
-                        old `isSubspanOf` new)
+                       srcSpanEndColumn new > srcSpanEndColumn old)
+                     -- (GHC.srcSpanEnd new == GHC.srcSpanEnd old &&
+                     --   old `isSubspanOf` new)
 
 -- | Is the comment after the node?
 commentLocated :: ComInfoLocation -> SrcSpan -> Comment -> Bool
