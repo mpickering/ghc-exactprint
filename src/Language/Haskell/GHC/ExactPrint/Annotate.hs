@@ -509,8 +509,8 @@ markLHsDecl (GHC.L l decl) =
       GHC.TyClD d       -> markLocated (GHC.L l d)
       GHC.InstD d       -> markLocated (GHC.L l d)
       GHC.DerivD d      -> markLocated (GHC.L l d)
-      GHC.ValD d        -> markLocated (GHC.L l d)
-      GHC.SigD d        -> markLocated (GHC.L l d)
+      GHC.ValD d        -> markAST l d
+      GHC.SigD d        -> markAST l d
       GHC.DefD d        -> markLocated (GHC.L l d)
       GHC.ForD d        -> markLocated (GHC.L l d)
       GHC.WarningD d    -> markLocated (GHC.L l d)
