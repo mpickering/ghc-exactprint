@@ -47,11 +47,44 @@ balanceComments ast as =
       case execState (collect After c ast) Nothing of
         Nothing -> return (Just com)
         Just ak@(AnnKey ss _) ->
-          if (fst $ ss2posEnd ss) == fst (ss2pos (commentIdentifier c))
+
+          -- Only move if actually on the same line, not following some
+          -- cruft
+          if fst (ss2posEnd ss) == fst (ss2pos (commentIdentifier c))
               then do
-                    modify (Map.adjust (\a -> a {annFollowingComments = annFollowingComments a ++ [com]}) ak)
-                    return Nothing
+                -- Check that we are not going to move it outside the
+                -- parent
+                    let parent = findEnclosure (commentIdentifier c) ast
+                    traceShowM parent
+                    if maybe True (ss `isSubspanOf`) parent
+                      then do
+                        modify (Map.adjust (\a -> a {annFollowingComments = annFollowingComments a ++ [com]}) ak)
+                        return Nothing
+                      else return (Just com)
               else return (Just com)
+
+
+-- Find the smallest span for which the specified span is a subspan
+findEnclosure :: (Data a, Typeable a) => SrcSpan -> a -> Maybe SrcSpan
+findEnclosure target ast = execState (SYB.everywhereM (return `SYB.ext2M` checkEnclosed) ast) Nothing
+  where
+    checkEnclosed :: (Data a, Data b) => GHC.GenLocated a b -> State (Maybe SrcSpan) (GHC.GenLocated a b)
+    checkEnclosed l@(GHC.L ss body) =
+      case cast ss of
+        Nothing -> return l
+        Just ss -> if target `isSubspanOf` ss
+                    then do
+                          modify (\mp ->
+                                    case mp of
+                                      Nothing -> Just ss
+                                      Just curParent ->
+                                        if ss `isSubspanOf` curParent
+                                          then Just ss
+                                          else Just curParent)
+                          return l
+                    else return l
+
+
 
 
 
