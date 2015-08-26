@@ -47,6 +47,8 @@ module Language.Haskell.GHC.ExactPrint.Transform
         , modifyDeclsT
 
         -- ** Managing lists, Transform monad
+        , hsDeclsPatBind
+        , replaceDeclsPatBind
         , insertAtStart
         , insertAtEnd
         , insertAfter
@@ -656,6 +658,26 @@ instance HasDecls GHC.ParsedSource where
         return (GHC.L l (GHC.HsModule mn exps imps decls deps haddocks))
 
 -- ---------------------------------------------------------------------
+-- | Note that this should only be used on PatBinds
+
+hsDeclsPatBind :: GHC.LHsDecl GHC.RdrName -> Transform [GHC.LHsDecl GHC.RdrName]
+hsDeclsPatBind (GHC.L _ (GHC.ValD (GHC.PatBind  {pat_rhs}))) =
+  let (GHC.GRHSs _ lb) = pat_rhs in getLocalBinds lb
+hsDeclsPatBind _ = return []
+
+-- TODO: Copy the fancy adding where stuff from Match
+replaceDeclsPatBind :: GHC.LHsDecl GHC.RdrName -> [GHC.LHsDecl GHC.RdrName] -> Transform (GHC.LHsDecl GHC.RdrName)
+replaceDeclsPatBind m@(GHC.L l (GHC.ValD (GHC.PatBind lhs (GHC.GRHSs rhs binds) f1 f2 f3))) newBinds = do
+        modifyAnnsT (captureOrderAnnKey (mkAnnKey m) newBinds)
+        binds' <- replaceLocalBinds binds newBinds
+        -- logDataWithAnnsTr "Match.replaceDecls:binds'" binds'
+        return (GHC.L l (GHC.ValD (GHC.PatBind lhs (GHC.GRHSs rhs binds') f1 f2 f3)))
+replaceDeclsPatBind d _ = return d
+
+
+
+
+-- ---------------------------------------------------------------------
 
 
 instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
@@ -713,6 +735,8 @@ instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
 
         -- logDataWithAnnsTr "Match.replaceDecls:binds'" binds'
         return (GHC.L l (GHC.Match mf p t (GHC.GRHSs rhs binds')))
+
+
 
 
 -- ---------------------------------------------------------------------

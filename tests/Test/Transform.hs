@@ -576,7 +576,6 @@ transformHighLevelTests =
   , mkTestModChange rmDecl6 "RmDecl6.hs" "RmDecl6"
   , mkTestModChange rmDecl7 "RmDecl7.hs" "RmDecl7"
 
-{-
   , mkTestModChange rmTypeSig1 "RmTypeSig1.hs" "RmTypeSig1"
   , mkTestModChange rmTypeSig2 "RmTypeSig2.hs" "RmTypeSig2"
 
@@ -584,7 +583,6 @@ transformHighLevelTests =
   , mkTestModChange addHiding2 "AddHiding2.hs" "AddHiding2"
 
   , mkTestModChange cloneDecl1 "CloneDecl1.hs" "CloneDecl1"
-  -}
   ]
 
 -- ---------------------------------------------------------------------
@@ -594,9 +592,10 @@ addLocaLDecl1 ans lp = do
   let declAnns' = setPrecedingLines newDecl 1 4 declAnns
       doAddLocal = do
         (d1:d2:_) <- hsDecls lp
-        modifyLocalDecl (Just (4,1)) (\m d -> do
+        d1' <- modifyLocalDecl (Just (4,1)) (\m d -> do
                                               balanceComments m d2
-                                              return (newDecl : d)) lp
+                                              return (newDecl : d)) d1
+        replaceDecls lp [d1', d2]
 
 
   let (lp',(ans',_),_w) = runTransform (mergeAnns ans declAnns') doAddLocal
@@ -606,20 +605,30 @@ addLocaLDecl1 ans lp = do
 type Decl = GHC.LHsDecl GHC.RdrName
 type Match =  GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
 
-modifyLocalDecl :: SYB.Data ast
-                => Maybe Pos
+modifyLocalDecl ::
+                   Maybe Pos
                 -> (Match -> [Decl] -> Transform [Decl])
-                -> ast
-                -> Transform ast
+                -> Decl
+                -> Transform Decl
+modifyLocalDecl p f m@(GHC.L ss (GHC.ValD (GHC.PatBind {} ))) =
+         if fromMaybe True ((ss2pos ss ==) <$> p)
+            then do
+              -- Need to use sort key
+              ds <- GHC.sortLocated <$> hsDeclsPatBind m
+              traceShowM (map showGhc ds)
+              f undefined ds >>= replaceDeclsPatBind m
+            else return m
 modifyLocalDecl p f ast = SYB.everywhereM (SYB.mkM doModLocal) ast
 
   where
     doModLocal :: Match
                 -> Transform Match
     doModLocal  m@(GHC.L ss _) =
+         traceShow ss $
          if fromMaybe True ((ss2pos ss ==) <$> p) then
             hsDecls m >>= f m >>= replaceDecls m
          else return m
+
 
 addLocaLDecl2 :: Changer
 addLocaLDecl2 ans lp = do
@@ -830,7 +839,6 @@ rmDecl5 ans lp = do
   let (lp',(ans',_),_w) = runTransform ans doRmDecl
   -- putStrLn $ "log:" ++ intercalate "\n" _w
   return (ans',lp')
-{-
 -- ---------------------------------------------------------------------
 
 rmDecl6 :: Changer
@@ -892,10 +900,10 @@ rmTypeSig2 ans lp = do
   let doRmDecl = do
          tlDecs <- hsDecls lp
          let [d1] = tlDecs
-         [s,d] <- hsDecls d1
+         d1' <-
+          modifyLocalDecl (Just (4,1))
+            (\_ (s:d:_) -> transferEntryDPT s d >> return [d]) d1
          -- logDataWithAnnsTr "[s,d]" [s,d]
-         transferEntryDPT s d
-         d1' <- replaceDecls d1 [d]
          replaceDecls lp [d1']
 
   let (lp',(ans',_),_w) = runTransform ans doRmDecl
@@ -967,4 +975,3 @@ cloneDecl1 ans lp = do
   return (ans',lp')
 
 -- ---------------------------------------------------------------------
--}
