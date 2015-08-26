@@ -111,7 +111,9 @@ runDeltaWithComments cs ast ga priorEnd =
   where
     mkAnns :: DeltaWriter -> Anns
     mkAnns (DeltaWriter{dwDelayedComments, dwAnns}) =
-      balanceComments ast (appEndo dwAnns mempty)
+--      balanceComments ast (
+        appEndo dwAnns mempty
+--       )
 
 -- ---------------------------------------------------------------------
 

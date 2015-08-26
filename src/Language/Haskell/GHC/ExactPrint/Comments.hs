@@ -1,8 +1,9 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, ViewPatterns #-}
 module Language.Haskell.GHC.ExactPrint.Comments (balanceComments) where
 
 import qualified SrcLoc as GHC
 import SrcLoc (SrcSpan, isSubspanOf)
+import ApiAnnotation
 import Data.Data
 import Language.Haskell.GHC.ExactPrint.Utils
 import Language.Haskell.GHC.ExactPrint.Types
@@ -58,8 +59,15 @@ balanceComments ast as =
                     traceShowM parent
                     if maybe True (ss `isSubspanOf`) parent
                       then do
-                        modify (Map.adjust (\a -> a {annFollowingComments = annFollowingComments a ++ [com]}) ak)
-                        return Nothing
+                        Just ann <- gets (Map.lookup ak)
+                        let badTrailing = case annsDP ann of
+                                            [] -> False
+                                            (last -> (c,_)) -> c `elem` [AnnSemiSep, G AnnComma]
+                        if badTrailing
+                          then return (Just com)
+                          else do
+                            modify (Map.adjust (\a -> a {annFollowingComments = annFollowingComments a ++ [com]}) ak)
+                            return Nothing
                       else return (Just com)
               else return (Just com)
 
@@ -103,11 +111,11 @@ collect loc' c ast =
               (modify (maybe (Just ak)
                             (\oldak@(AnnKey oldL _) ->
                              Just (if (test loc' oldL newL)
-                                      then  ak
+                                      then  traceShow (loc', "Updating", ak) ak
                                       else  oldak)))))
             return l
 
-test After = testBefore
+test After = testBefore Biggest
 test Before = testAfter
 
 -- Locate with the previous biggest closest thing
@@ -119,12 +127,21 @@ testAfter old new =
                         old `isSubspanOf` new)
 
 
-testBefore old new =
+-- Smallest preceeding element
+
+data Size = Biggest | Smallest
+
+testBefore size old new =
                      (srcSpanEndLine new > srcSpanEndLine old) ||
                       (srcSpanEndLine new == srcSpanEndLine old &&
                        srcSpanEndColumn new > srcSpanEndColumn old)
-                     -- (GHC.srcSpanEnd new == GHC.srcSpanEnd old &&
-                     --   old `isSubspanOf` new)
+--                      (GHC.srcSpanEnd new == GHC.srcSpanEnd old &&
+--                        new `isSubspanOf` old)
+--  where
+--    (old, new) = case size of
+--                   Biggest -> (s1, s2)
+--                   Smallest -> (s2, s1)
+
 
 -- | Is the comment after the node?
 commentLocated :: ComInfoLocation -> SrcSpan -> Comment -> Bool

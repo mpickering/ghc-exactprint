@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections, NamedFieldPuns #-}
+{-# LANGUAGE TupleSections, NamedFieldPuns, ScopedTypeVariables #-}
 module Test.Transform where
 
 import Language.Haskell.GHC.ExactPrint
@@ -11,7 +11,7 @@ import GHC.Paths ( libdir )
 
 import qualified Bag            as GHC
 import qualified DynFlags       as GHC
-import qualified GHC            as GHC
+import qualified GHC
 import qualified OccName        as GHC
 import qualified RdrName        as GHC
 import qualified SrcLoc         as GHC
@@ -21,6 +21,7 @@ import qualified Data.Generics as SYB
 -- import qualified GHC.SYB.Utils as SYB
 
 import Control.Monad
+import Control.Monad.State
 import System.FilePath
 import System.IO
 import qualified Data.Map as Map
@@ -78,8 +79,8 @@ changeWhereIn3a :: Changer
 changeWhereIn3a ans (GHC.L l p) = do
   let decls = GHC.hsmodDecls p
          -- (GHC.L _ (GHC.SigD sig))    = head $ drop 1 decls
-      d1 = head $ drop 2 decls
-      d2 = head $ drop 3 decls
+      d1 = decls !! 2
+      d2 = decls !! 3
   let (_p1,(ans',_),_w) = runTransform ans (balanceComments d1 d2)
   let p2 = p { GHC.hsmodDecls = d2:d1:decls}
   return (ans',GHC.L l p2)
@@ -92,16 +93,16 @@ changeLocalDecls2 :: Changer
 changeLocalDecls2 ans (GHC.L l p) = do
   Right (declAnns, d@(GHC.L ld (GHC.ValD decl))) <- withDynFlags (\df -> parseDecl df "decl" "nn = 2")
   Right (sigAnns, s@(GHC.L ls (GHC.SigD sig)))   <- withDynFlags (\df -> parseDecl df "sig"  "nn :: Int")
-  let declAnns' = setPrecedingLines (GHC.L ld decl) 1 0 declAnns
-  let  sigAnns' = setPrecedingLines (GHC.L ls  sig) 1 4 sigAnns
+  let declAnns' = setPrecedingLines d 1 0 declAnns
+  let  sigAnns' = setPrecedingLines s 1 4 sigAnns
   -- putStrLn $ "changeLocalDecls:sigAnns=" ++ show sigAnns
   -- putStrLn $ "changeLocalDecls:declAnns=" ++ show declAnns
   -- putStrLn $ "\nchangeLocalDecls:sigAnns'=" ++ show sigAnns'
-  let (p',(ans',_),_w) = runTransform ans doAddLocal
+  let (p',(ans',_),_w) = runTransform (mergeAnnList [declAnns',sigAnns',ans]) doAddLocal
       doAddLocal = SYB.everywhereM (SYB.mkM replaceLocalBinds) p
       replaceLocalBinds :: GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
                         -> Transform (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName))
-      replaceLocalBinds m@(GHC.L lm (GHC.Match mln pats typ (GHC.GRHSs rhs (GHC.EmptyLocalBinds)))) = do
+      replaceLocalBinds m@(GHC.L lm (GHC.Match mln pats typ (GHC.GRHSs rhs GHC.EmptyLocalBinds))) = do
         newSpan <- uniqueSrcSpanT
         let
           newAnnKey = AnnKey newSpan (CN "HsValBinds")
@@ -119,15 +120,17 @@ changeLocalDecls2 ans (GHC.L l p) = do
                              { annEntryDelta     = DP (1,0) }
         modifyAnnsT addWhere
         let decls = [s,d]
+        [s'] <- decl2SigT s
+        [d'] <- decl2BindT d
         -- logTr $ "(m,decls)=" ++ show (mkAnnKey m,map mkAnnKey decls)
         modifyAnnsT (captureOrderAnnKey newAnnKey decls)
         return (GHC.L lm (GHC.Match mln pats typ (GHC.GRHSs rhs
                         (GHC.HsValBinds
-                          (GHC.ValBindsIn (GHC.listToBag $ [GHC.L ld decl])
-                                          [GHC.L ls sig])))))
+                          (GHC.ValBindsIn (GHC.listToBag [d'])
+                                          [s'])))))
       replaceLocalBinds x = return x
   -- putStrLn $ "log:" ++ intercalate "\n" w
-  return (mergeAnnList [declAnns',sigAnns',ans'],GHC.L l p')
+  return (ans',GHC.L l p')
 
 -- ---------------------------------------------------------------------
 
@@ -136,16 +139,19 @@ changeLocalDecls :: Changer
 changeLocalDecls ans (GHC.L l p) = do
   Right (declAnns, d@(GHC.L ld (GHC.ValD decl))) <- withDynFlags (\df -> parseDecl df "decl" "nn = 2")
   Right (sigAnns, s@(GHC.L ls (GHC.SigD sig)))   <- withDynFlags (\df -> parseDecl df "sig"  "nn :: Int")
-  let declAnns' = setPrecedingLines (GHC.L ld decl) 1 0 declAnns
-  let  sigAnns' = setPrecedingLines (GHC.L ls  sig) 1 4 sigAnns
+  let
+      declAnns' = setPrecedingLines d 1 0  declAnns
+      sigAnns' = setPrecedingLines s 1 4 sigAnns
   -- putStrLn $ "changeLocalDecls:sigAnns=" ++ show sigAnns
   -- putStrLn $ "changeLocalDecls:declAnns=" ++ show declAnns
   -- putStrLn $ "\nchangeLocalDecls:sigAnns'=" ++ show sigAnns'
-  let (p',(ans',_),_w) = runTransform ans doAddLocal
+  let (p',(ans',_),_w) = runTransform (mergeAnnList [ans, declAnns', sigAnns']) doAddLocal
       doAddLocal = SYB.everywhereM (SYB.mkM replaceLocalBinds) p
       replaceLocalBinds :: GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
                         -> Transform (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName))
       replaceLocalBinds m@(GHC.L lm (GHC.Match mln pats typ (GHC.GRHSs rhs (GHC.HsValBinds (GHC.ValBindsIn binds sigs))))) = do
+        [d'] <- decl2BindT d
+        [s'] <- decl2SigT s
         a1 <- getAnnsT
         a' <- case sigs of
               []    -> return a1
@@ -159,11 +165,11 @@ changeLocalDecls ans (GHC.L l p) = do
         modifyAnnsT (captureOrder m decls)
         return (GHC.L lm (GHC.Match mln pats typ (GHC.GRHSs rhs
                         (GHC.HsValBinds
-                          (GHC.ValBindsIn (GHC.listToBag $ (GHC.L ld decl):GHC.bagToList binds)
-                                          (GHC.L ls sig:sigs))))))
+                          (GHC.ValBindsIn (GHC.listToBag $ d':GHC.bagToList binds)
+                                          (s':sigs))))))
       replaceLocalBinds x = return x
   -- putStrLn $ "log:" ++ intercalate "\n" w
-  return (mergeAnnList [declAnns',sigAnns',ans'],GHC.L l p')
+  return (ans',GHC.L l p')
 
 -- ---------------------------------------------------------------------
 
@@ -173,13 +179,15 @@ changeAddDecl ans top = do
   Right (declAnns, decl) <- withDynFlags (\df -> parseDecl df "<interactive>" "nn = n2")
   putStrLn $ "changeDecl:(declAnns,decl)=" ++ showGhc (declAnns,decl)
   -- Should use typeclass interface
-  let declAnns' = setPrecedingLinesDecl decl 2 0 declAnns
+  let declAnns' = setPrecedingLines decl 2 0 declAnns
   -- putStrLn $ "changeDecl:(declAnns',decl)=" ++ showGhc (declAnns',decl)
 
   let (p',(ans',_),_) = runTransform ans doAddDecl
       doAddDecl = SYB.everywhereM (SYB.mkM replaceTopLevelDecls) top
-      replaceTopLevelDecls :: GHC.ParsedSource -> Transform (GHC.ParsedSource)
-      replaceTopLevelDecls m = insertAtStart m decl
+      replaceTopLevelDecls :: GHC.ParsedSource -> Transform GHC.ParsedSource
+      replaceTopLevelDecls m = do
+        decls <- hsDecls m
+        replaceDecls m (decl: decls)
   return (mergeAnns declAnns' ans',p')
 
 -- ---------------------------------------------------------------------
@@ -376,7 +384,7 @@ changeWhereIn4 ans parsed
   where
     replace :: GHC.Located GHC.RdrName -> GHC.Located GHC.RdrName
     replace (GHC.L ln _n)
-      | ln == (g (12,16) (12,17)) = GHC.L ln (GHC.mkRdrUnqual (GHC.mkVarOcc "p_2"))
+      | ln == g (12,16) (12,17) = GHC.L ln (GHC.mkRdrUnqual (GHC.mkVarOcc "p_2"))
       where
         g start end = GHC.mkSrcSpan (f start) (f end)
         fname = fromMaybe (GHC.mkFastString "f") (GHC.srcSpanFileName_maybe ln)
@@ -393,8 +401,8 @@ changeLetIn1 ans parsed
     replace (GHC.HsLet localDecls expr@(GHC.L _ _))
       =
          let (GHC.HsValBinds (GHC.ValBindsIn bagDecls sigs)) = localDecls
-             bagDecls' = GHC.listToBag $ init $ GHC.bagToList bagDecls
-         in (GHC.HsLet (GHC.HsValBinds (GHC.ValBindsIn bagDecls' sigs)) expr)
+             bagDecls' = GHC.listToBag . init $ GHC.bagToList bagDecls
+         in GHC.HsLet (GHC.HsValBinds (GHC.ValBindsIn bagDecls' sigs)) expr
 
     replace x = x
 
@@ -439,7 +447,7 @@ manipulateAstTest' mchange useTH file' modname = do
   (ghcAnns',p,cppComments) <- hSilence [stderr] $  parsedFileGhc file modname useTH
   -- (ghcAnns',p,cppComments) <-                      parsedFileGhc file modname useTH
   let
-    parsedOrig = GHC.pm_parsed_source $ p
+    parsedOrig = GHC.pm_parsed_source p
     (ghcAnns,parsed) = (ghcAnns', parsedOrig)
     parsedAST = showAnnData emptyAnns 0 parsed
     -- cppComments = map (tokComment . commentToAnnotation . fst) cppCommentToks
@@ -471,7 +479,7 @@ manipulateAstTest' mchange useTH file' modname = do
              ++ "\n========================\n"
              ++ showGhc ann
   -- putStrLn $ "Test:ann :" ++ showGhc ann
-  writeFile out $ result
+  writeFile out result
   -- putStrLn $ "Test:contents' :" ++ contents
   -- putStrLn $ "Test:parsed=" ++ parsedAST
   -- putStrLn $ "Test:showdata:parsedOrig" ++ SYB.showData SYB.Parser 0 parsedOrig
@@ -491,48 +499,47 @@ manipulateAstTest' mchange useTH file' modname = do
 type ParseResult = GHC.ParsedModule
 
 parsedFileGhc :: String -> String -> Bool -> IO (GHC.ApiAnns,ParseResult,[Comment])
-parsedFileGhc fileName _modname useTH = do
-    -- putStrLn $ "parsedFileGhc:" ++ show fileName
+parsedFileGhc fileName _modname useTH =
     GHC.defaultErrorHandler GHC.defaultFatalMessager GHC.defaultFlushOut $ do
-      GHC.runGhc (Just libdir) $ do
-        dflags <- GHC.getSessionDynFlags
-        let dflags2 = dflags { GHC.importPaths = ["./tests/examples/","../tests/examples/",
-                                                  "./src/","../src/"] }
-            tgt = if useTH then GHC.HscInterpreted
-                           else GHC.HscNothing -- allows FFI
-            dflags3 = dflags2 { GHC.hscTarget = tgt
-                              , GHC.ghcLink =  GHC.LinkInMemory
-                              }
+  GHC.runGhc (Just libdir) $ do
+    dflags <- GHC.getSessionDynFlags
+    let dflags2 = dflags { GHC.importPaths = ["./tests/examples/","../tests/examples/",
+                                              "./src/","../src/"] }
+        tgt = if useTH then GHC.HscInterpreted
+                       else GHC.HscNothing -- allows FFI
+        dflags3 = dflags2 { GHC.hscTarget = tgt
+                          , GHC.ghcLink =  GHC.LinkInMemory
+                          }
 
-            dflags4 = GHC.gopt_set dflags3 GHC.Opt_KeepRawTokenStream
+        dflags4 = GHC.gopt_set dflags3 GHC.Opt_KeepRawTokenStream
 
-        (dflags5,_args,_warns) <- GHC.parseDynamicFlagsCmdLine dflags4 [GHC.noLoc "-package ghc"]
-        -- GHC.liftIO $ putStrLn $ "dflags set:(args,warns)" ++ show (map GHC.unLoc _args,map GHC.unLoc _warns)
-        void $ GHC.setSessionDynFlags dflags5
-        -- GHC.liftIO $ putStrLn $ "dflags set"
+    (dflags5,_args,_warns) <- GHC.parseDynamicFlagsCmdLine dflags4 [GHC.noLoc "-package ghc"]
+    -- GHC.liftIO $ putStrLn $ "dflags set:(args,warns)" ++ show (map GHC.unLoc _args,map GHC.unLoc _warns)
+    void $ GHC.setSessionDynFlags dflags5
+    -- GHC.liftIO $ putStrLn $ "dflags set"
 
-        -- hsc_env <- GHC.getSession
-        -- (dflags6,fn_pp) <- GHC.liftIO $ GHC.preprocess hsc_env (fileName,Nothing)
-        -- GHC.liftIO $ putStrLn $ "preprocess got:" ++ show fn_pp
+    -- hsc_env <- GHC.getSession
+    -- (dflags6,fn_pp) <- GHC.liftIO $ GHC.preprocess hsc_env (fileName,Nothing)
+    -- GHC.liftIO $ putStrLn $ "preprocess got:" ++ show fn_pp
 
 
-        target <- GHC.guessTarget fileName Nothing
-        GHC.setTargets [target]
-        -- GHC.liftIO $ putStrLn $ "target set:" ++ showGhc (GHC.targetId target)
-        void $ GHC.load GHC.LoadAllTargets -- Loads and compiles, much as calling make
-        -- GHC.liftIO $ putStrLn $ "targets loaded"
-        -- g <- GHC.getModuleGraph
-        -- let showStuff ms = show (GHC.moduleNameString $ GHC.moduleName $ GHC.ms_mod ms,GHC.ms_location ms)
-        -- GHC.liftIO $ putStrLn $ "module graph:" ++ (intercalate "," (map showStuff g))
+    target <- GHC.guessTarget fileName Nothing
+    GHC.setTargets [target]
+    -- GHC.liftIO $ putStrLn $ "target set:" ++ showGhc (GHC.targetId target)
+    void $ GHC.load GHC.LoadAllTargets -- Loads and compiles, much as calling make
+    -- GHC.liftIO $ putStrLn $ "targets loaded"
+    -- g <- GHC.getModuleGraph
+    -- let showStuff ms = show (GHC.moduleNameString $ GHC.moduleName $ GHC.ms_mod ms,GHC.ms_location ms)
+    -- GHC.liftIO $ putStrLn $ "module graph:" ++ (intercalate "," (map showStuff g))
 
-        -- modSum <- GHC.getModSummary $ GHC.mkModuleName modname
-        Just modSum <- getModSummaryForFile fileName
-        -- GHC.liftIO $ putStrLn $ "got modSum"
-        -- let modSum = head g
-        cppComments <-  if (GHC.xopt GHC.Opt_Cpp dflags5)
-                        then getCppTokensAsComments defaultCppOptions fileName
-                        else return []
-        -- let cppComments = [] :: [(GHC.Located GHC.Token, String)]
+    -- modSum <- GHC.getModSummary $ GHC.mkModuleName modname
+    Just modSum <- getModSummaryForFile fileName
+    -- GHC.liftIO $ putStrLn $ "got modSum"
+    -- let modSum = head g
+    cppComments <-  if (GHC.xopt GHC.Opt_Cpp dflags5)
+                    then getCppTokensAsComments defaultCppOptions fileName
+                    else return []
+    -- let cppComments = [] :: [(GHC.Located GHC.Token, String)]
 --        GHC.liftIO $ putStrLn $ "\ncppTokensAsComments for:"  ++ fileName ++ "=========\n"
 --                              ++ showGhc cppComments ++ "\n================\n"
 {-
@@ -540,15 +547,15 @@ parsedFileGhc fileName _modname useTH = do
         strSrcBuf <- getPreprocessedSrc sourceFile
         GHC.liftIO $ putStrLn $ "preprocessedSrc====\n" ++ strSrcBuf ++ "\n================\n"
 -}
-        p <- GHC.parseModule modSum
-        -- GHC.liftIO $ putStrLn $ "got parsedModule"
+    p <- GHC.parseModule modSum
+    -- GHC.liftIO $ putStrLn $ "got parsedModule"
 --        t <- GHC.typecheckModule p
-        -- GHC.liftIO $ putStrLn $ "typechecked"
-        -- toks <- GHC.getRichTokenStream (GHC.ms_mod modSum)
-        -- GHC.liftIO $ putStrLn $ "toks" ++ show toks
-        let anns = GHC.pm_annotations p
-        -- GHC.liftIO $ putStrLn $ "anns"
-        return (anns,p,cppComments)
+    -- GHC.liftIO $ putStrLn $ "typechecked"
+    -- toks <- GHC.getRichTokenStream (GHC.ms_mod modSum)
+    -- GHC.liftIO $ putStrLn $ "toks" ++ show toks
+    let anns = GHC.pm_annotations p
+    -- GHC.liftIO $ putStrLn $ "anns"
+    return (anns,p,cppComments)
 
 -- ---------------------------------------------------------------------
 
@@ -556,7 +563,6 @@ transformHighLevelTests :: [Test]
 transformHighLevelTests =
   [
     mkTestModChange addLocaLDecl1  "AddLocalDecl1.hs"  "AddLocalDecl1"
-    {-
   , mkTestModChange addLocaLDecl2  "AddLocalDecl2.hs"  "AddLocalDecl2"
   , mkTestModChange addLocaLDecl3  "AddLocalDecl3.hs"  "AddLocalDecl3"
   , mkTestModChange addLocaLDecl4  "AddLocalDecl4.hs"  "AddLocalDecl4"
@@ -570,6 +576,7 @@ transformHighLevelTests =
   , mkTestModChange rmDecl6 "RmDecl6.hs" "RmDecl6"
   , mkTestModChange rmDecl7 "RmDecl7.hs" "RmDecl7"
 
+{-
   , mkTestModChange rmTypeSig1 "RmTypeSig1.hs" "RmTypeSig1"
   , mkTestModChange rmTypeSig2 "RmTypeSig2.hs" "RmTypeSig2"
 
@@ -583,27 +590,36 @@ transformHighLevelTests =
 -- ---------------------------------------------------------------------
 addLocaLDecl1 :: Changer
 addLocaLDecl1 ans lp = do
-  Right (declAnns, newDecl@(GHC.L ld (GHC.ValD decl))) <- withDynFlags (\df -> parseDecl df "decl" "nn = 2")
-  let declAnns' = setPrecedingLines (GHC.L ld decl) 1 0 declAnns
-
-      doAddLocal :: GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
-                 -> Transform (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName))
-      doAddLocal m@(GHC.L ss _) =
-         if ss2pos ss == (4, 1) then
-          do
-            decls <- hsDecls m
-            modifyAnnsT (setPrecedingLines newDecl 1 4)
-            parent' <- replaceDecls m (newDecl:decls)
-            return parent'
-         else return m
-
-         setPrecedingLinesT newDecl 1 4
+  Right (declAnns, newDecl) <- withDynFlags (\df -> parseDecl df "decl" "nn = 2")
+  let declAnns' = setPrecedingLines newDecl 1 4 declAnns
+      doAddLocal = do
+        (d1:d2:_) <- hsDecls lp
+        modifyLocalDecl (Just (4,1)) (\m d -> do
+                                              balanceComments m d2
+                                              return (newDecl : d)) lp
 
 
-  let (lp',(ans',_),_w) = runTransform ans (SYB.everywhereM (SYB.mkM doAddLocal) lp)
-  return (mergeAnnList [declAnns',ans'],lp')
-{-
+  let (lp',(ans',_),_w) = runTransform (mergeAnns ans declAnns') doAddLocal
+  return (ans',lp')
 -- ---------------------------------------------------------------------
+
+type Decl = GHC.LHsDecl GHC.RdrName
+type Match =  GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)
+
+modifyLocalDecl :: SYB.Data ast
+                => Maybe Pos
+                -> (Match -> [Decl] -> Transform [Decl])
+                -> ast
+                -> Transform ast
+modifyLocalDecl p f ast = SYB.everywhereM (SYB.mkM doModLocal) ast
+
+  where
+    doModLocal :: Match
+                -> Transform Match
+    doModLocal  m@(GHC.L ss _) =
+         if fromMaybe True ((ss2pos ss ==) <$> p) then
+            hsDecls m >>= f m >>= replaceDecls m
+         else return m
 
 addLocaLDecl2 :: Changer
 addLocaLDecl2 ans lp = do
@@ -613,17 +629,13 @@ addLocaLDecl2 ans lp = do
       doAddLocal = do
          tlDecs <- hsDecls lp
          let parent = head tlDecs
-         decls <- hsDecls parent
-         balanceComments parent (head $ tail tlDecs)
+         parent' <-
+          modifyLocalDecl (Just (4,1))
+            (\_ dds@(d:ds) -> transferEntryDPT d newDecl
+                          >> setEntryDPT d (DP (1,0))
+                          >> return (newDecl : dds)) parent
 
-         transferEntryDPT (head decls) newDecl
-         -- setPrecedingLinesT (head decls) 1 0
-         setEntryDPT (head decls) (DP (1, 0))
-
-         logDataWithAnnsTr "addLocalDecl2:before:(newDecl,decls)" (newDecl,decls)
-
-         parent' <- replaceDecls parent (newDecl:decls)
-         logDataWithAnnsTr "addLocalDecl2:after:(newDecl,decls)" (newDecl,decls)
+         --logDataWithAnnsTr "addLocalDecl2:after:(newDecl,decls)" (newDecl,decls)
          replaceDecls lp (parent':tail tlDecs)
 
   let (lp',(ans',_),_w) = runTransform (mergeAnns ans declAnns) doAddLocal
@@ -638,23 +650,27 @@ addLocaLDecl3 ans lp = do
   let
       doAddLocal = do
          -- logDataWithAnnsTr "parsed:" lp
-         logDataWithAnnsTr "newDecl:" newDecl
-         tlDecs <- hsDecls lp
-         let parent = head tlDecs
-         decls <- hsDecls parent
-         balanceComments parent (head $ tail tlDecs)
+         -- logDataWithAnnsTr "newDecl:" newDecl
+         tlDecls@(d1:d2:_) <- hsDecls lp
+         let parent = d1
+         parent' <- modifyLocalDecl (Just (4,1)) (\m d -> do
+                                                     balanceComments m d2
+                                                     moveTrailingComments m (last d)
+                                                     setPrecedingLinesT newDecl 1 0
+                                                     return (d ++ [newDecl])) parent
+         --balanceComments parent (head $ tail tlDecs)
 
          -- logDataWithAnnsTr "parent:1:" parent
 
-         setPrecedingLinesT newDecl 1 0
+--         setPrecedingLinesT newDecl 1 0
          -- setPrecedingLinesDeclT newDecl 1 0
 
-         moveTrailingComments parent (last decls)
+--         moveTrailingComments parent (last decls)
          -- logDataWithAnnsTr "parent:2:" parent
 
-         parent' <- replaceDecls parent (decls++[newDecl])
+  --       parent' <- replaceDecls parent (decls++[newDecl])
          -- logDataWithAnnsTr "parent:3:" parent'
-         replaceDecls lp (parent':tail tlDecs)
+         replaceDecls lp (parent':tail tlDecls)
 
   let (lp',(ans',_),_w) = runTransform (mergeAnns ans declAnns) doAddLocal
   -- putStrLn $ "log\n" ++ intercalate "\n" _w
@@ -671,19 +687,13 @@ addLocaLDecl4 ans lp = do
       doAddLocal = do
          tlDecs <- hsDecls lp
          let parent = head tlDecs
-         decls <- hsDecls parent
-
-         setPrecedingLinesT newSig  1 0
-         setPrecedingLinesT newDecl 1 0
-
-         logDataWithAnnsTr "newSig:" newSig
-         logDataWithAnnsTr "newDecl:" newDecl
-
-         parent' <- replaceDecls parent (decls++[newSig,newDecl])
+         parent' <- modifyLocalDecl (Just (3, 1)) (\_ decls -> setPrecedingLinesT newSig 1 0
+                                                    >> setPrecedingLinesT newDecl 1 0
+                                                    >> return (decls ++ [newSig, newDecl])) parent
          replaceDecls lp (parent':tail tlDecs)
 
   let (lp',(ans',_),w) = runTransform (mergeAnnList [ans,declAnns,sigAnns]) doAddLocal
-  putStrLn $ "log\n" ++ intercalate "\n" w
+--  putStrLn $ "log\n" ++ intercalate "\n" w
   --putStrLn (showGhc ans')
   return (ans',lp')
 -- ---------------------------------------------------------------------
@@ -737,10 +747,9 @@ rmDecl2 ans lp = do
       doRmDecl = do
         let
           go :: GHC.LHsExpr GHC.RdrName -> Transform (GHC.LHsExpr GHC.RdrName)
-          go e@(GHC.L _ (GHC.HsLet{})) = do
+          go e@(GHC.L _ (GHC.HsLet _ _)) = do
             decs <- hsDecls e
-            e' <- replaceDecls e (init decs)
-            return e'
+            replaceDecls e (init decs)
           go x = return x
 
         SYB.everywhereM (SYB.mkM go) lp
@@ -756,12 +765,14 @@ rmDecl3 ans lp = do
       doRmDecl = do
          tlDecs <- hsDecls lp
          let [d1] = tlDecs
+         liftedDs <- case findMatch d1 of
+                          Just (match :: Match) -> hsDecls match
+                          Nothing -> error (showAnnData ans 0 d1)
 
-         subDecs <- hsDecls d1
-         let [sd1] = subDecs
+         let [sd1] = liftedDs
 
-         setPrecedingLinesDeclT sd1 2 0
-         d1' <- replaceDecls d1 []
+         d1' <- modifyLocalDecl (Just (4,1)) (\_ _ -> return []) d1
+         modifyAnnsT (setPrecedingLines sd1 2 0)
          replaceDecls lp [d1',sd1]
 
   let (lp',(ans',_),_w) = runTransform ans doRmDecl
@@ -776,16 +787,28 @@ rmDecl4 ans lp = do
          tlDecs <- hsDecls lp
          let [d1] = tlDecs
 
-         subDecs <- hsDecls d1
-         let [sd1,sd2] = subDecs
-         transferEntryDPT sd1 sd2
 
-         setPrecedingLinesDeclT sd1 2 0
-         d1' <- replaceDecls d1 [sd2]
-         replaceDecls lp [d1',sd1]
+         let removeAndReturn :: Match -> StateT Decl Transform Match
+             removeAndReturn m@(GHC.L ss _) =
+               if ss2pos ss == (4,1) then
+                do
+                  (sd1:sd2:_) <- lift $ hsDecls m
+                  lift $ transferEntryDPT sd1 sd2
+                  put sd1
+                  lift $ replaceDecls m [sd2]
+                else return m
+
+         (d1', sd2) <- runStateT (SYB.everywhereM (SYB.mkM removeAndReturn) d1) undefined
+
+         modifyAnnsT (setPrecedingLines sd2 2 0)
+         replaceDecls lp [d1',sd2]
 
   let (lp',(ans',_),_w) = runTransform ans doRmDecl
   return (ans',lp')
+
+findMatch :: SYB.Data a => a -> Maybe Match
+findMatch a = SYB.something (SYB.cast) a
+
 
 -- ---------------------------------------------------------------------
 
@@ -794,13 +817,12 @@ rmDecl5 ans lp = do
   let
       doRmDecl = do
         let
-          go :: GHC.HsExpr GHC.RdrName -> Transform (GHC.HsExpr GHC.RdrName)
-          go (GHC.HsLet lb expr) = do
-            decs <- hsDecls lb
+          go :: GHC.LHsExpr GHC.RdrName -> Transform (GHC.LHsExpr GHC.RdrName)
+          go m@(GHC.L _ (GHC.HsLet lb expr)) = do
+            decs <- hsDecls m
             let dec = last decs
             transferEntryDPT (head decs) dec
-            lb' <- replaceDecls lb [dec]
-            return (GHC.HsLet lb' expr)
+            replaceDecls m [dec]
           go x = return x
 
         SYB.everywhereM (SYB.mkM go) lp
@@ -808,7 +830,7 @@ rmDecl5 ans lp = do
   let (lp',(ans',_),_w) = runTransform ans doRmDecl
   -- putStrLn $ "log:" ++ intercalate "\n" _w
   return (ans',lp')
-
+{-
 -- ---------------------------------------------------------------------
 
 rmDecl6 :: Changer

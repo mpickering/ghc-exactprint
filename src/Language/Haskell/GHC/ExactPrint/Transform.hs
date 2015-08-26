@@ -36,7 +36,6 @@ module Language.Haskell.GHC.ExactPrint.Transform
         , getEntryDPT
         , setEntryDPT
         , transferEntryDPT
-        , setPrecedingLinesDeclT
         , setPrecedingLinesT
         , addSimpleAnnT
         , addTrailingCommaT
@@ -68,7 +67,6 @@ module Language.Haskell.GHC.ExactPrint.Transform
         -- * Pure functions
         , mergeAnns
         , mergeAnnList
-        , setPrecedingLinesDecl
         , setPrecedingLines
         , getEntryDP
         , setEntryDP
@@ -272,7 +270,7 @@ pushDeclAnnT ld@(GHC.L l decl) = do
     duplicateAnn d ans =
       case Map.lookup (mkAnnKey ld) ans of
         Nothing -> error $ "pushDeclAnnT:no key found for:" ++ show (mkAnnKey ld)
-        Just ann -> traceShow ann $
+        Just ann ->
           Map.insert (mkAnnKey (GHC.L l d))
                                       ann
                                       ans
@@ -364,13 +362,6 @@ transferEntryDPT a b =
 
 -- ---------------------------------------------------------------------
 
--- |'Transform' monad version of 'setPrecedingLinesDecl'
-setPrecedingLinesDeclT ::  GHC.LHsDecl GHC.RdrName -> Int -> Int -> Transform ()
-setPrecedingLinesDeclT ld n c =
-  modifyAnnsT (setPrecedingLinesDecl ld n c)
-
--- ---------------------------------------------------------------------
-
 -- |'Transform' monad version of 'setPrecedingLines'
 setPrecedingLinesT ::  (SYB.Data a) => GHC.Located a -> Int -> Int -> Transform ()
 setPrecedingLinesT ld n c =
@@ -387,13 +378,6 @@ mergeAnns
 mergeAnnList :: [Anns] -> Anns
 mergeAnnList [] = error "mergeAnnList must have at lease one entry"
 mergeAnnList (x:xs) = foldr mergeAnns x xs
-
--- ---------------------------------------------------------------------
-
--- |Unwrap a HsDecl and call setPrecedingLines on it
--- ++AZ++ TODO: get rid of this, it is a synonym only
-setPrecedingLinesDecl :: GHC.LHsDecl GHC.RdrName -> Int -> Int -> Anns -> Anns
-setPrecedingLinesDecl ld n c ans = setPrecedingLines ld n c ans
 
 -- ---------------------------------------------------------------------
 
@@ -440,7 +424,7 @@ setCommentEntryDP ann dp = ann'
 -- |Take the annEntryDelta associated with the first item and associate it with the second.
 -- Also transfer any comments occuring before it.
 transferEntryDP :: (SYB.Data a, SYB.Data b) => GHC.Located a -> GHC.Located b -> Anns -> Anns
-transferEntryDP a b anns = (const anns2) anns
+transferEntryDP a b anns = anns2
   where
     maybeAnns = do -- Maybe monad
       anA <- Map.lookup (mkAnnKeyU a) anns
@@ -565,7 +549,7 @@ moveTrailingComments first second = do
         cs1f = annFollowingComments an1
         cs2f = annFollowingComments an2
         an1' = an1 { annFollowingComments = [] }
-        an2' = an2 { annFollowingComments = cs1f ++ cs2f }
+        an2' = (an2 { annFollowingComments = cs1f ++ cs2f })
         ans' = Map.insert k1 an1' $ Map.insert k2 an2' ans
 
   modifyAnnsT moveComments
@@ -676,15 +660,7 @@ instance HasDecls GHC.ParsedSource where
 
 instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
   hsDecls (GHC.L _ (GHC.Match _ _ _ grhs)) =
-    let (GHC.GRHSs _ lb) = grhs in
-    case lb of
-      GHC.HsValBinds (GHC.ValBindsIn bs sigs) -> do
-        bds <- mapM wrapDeclT (GHC.bagToList bs)
-        sds <- mapM wrapSigT sigs
-        return (bds ++ sds)
-      GHC.HsValBinds (GHC.ValBindsOut _ _) -> error $ "hsDecls.ValbindsOut not valid"
-      GHC.HsIPBinds _     -> return []
-      GHC.EmptyLocalBinds -> return []
+    let (GHC.GRHSs _ lb) = grhs in getLocalBinds lb
 
   replaceDecls m@(GHC.L l (GHC.Match mf p t (GHC.GRHSs rhs binds))) []
     = do
@@ -718,7 +694,10 @@ instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
                   Nothing -> error "wtf"
                   Just ann -> Map.insert (mkAnnKeyU m) ann1 mkds
                     where
-                      ann1 = ann { annsDP = annsDP ann ++ [(G GHC.AnnWhere,DP (1,2))]
+                      mkComs a =
+                        map (\(c,dp) -> (AnnComment c, dp)) (annFollowingComments a)
+                      ann1 = ann { annsDP = annsDP ann ++ mkComs ann ++ [(G GHC.AnnWhere,DP (1,2))]
+                                 , annFollowingComments = []
                                  }
             modifyAnnsT addWhere
             modifyAnnsT (setPrecedingLines (ghead "LMatch.replaceDecls" newBinds) 1 4)
@@ -735,7 +714,20 @@ instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
         -- logDataWithAnnsTr "Match.replaceDecls:binds'" binds'
         return (GHC.L l (GHC.Match mf p t (GHC.GRHSs rhs binds')))
 
+
 -- ---------------------------------------------------------------------
+
+-- TODO: This needs to return them in the right order
+getLocalBinds :: GHC.HsLocalBindsLR GHC.RdrName GHC.RdrName -> Transform [GHC.LHsDecl GHC.RdrName]
+getLocalBinds lb =
+    case lb of
+      GHC.HsValBinds (GHC.ValBindsIn bs sigs) -> do
+        bds <- mapM wrapDeclT (GHC.bagToList bs)
+        sds <- mapM wrapSigT sigs
+        return (bds ++ sds)
+      GHC.HsValBinds (GHC.ValBindsOut _ _) -> error $ "hsDecls.ValbindsOut not valid"
+      GHC.HsIPBinds _     -> return []
+      GHC.EmptyLocalBinds -> return []
 
 
 
@@ -766,17 +758,14 @@ replaceLocalBinds (GHC.EmptyLocalBinds) new
       let sigs = concat newSigs
       return (GHC.HsValBinds (GHC.ValBindsIn decs sigs))
 
--- ---------------------------------------------------------------------
-{-
 instance HasDecls (GHC.LHsExpr GHC.RdrName) where
-  hsDecls (GHC.L _ (GHC.HsLet decls _ex)) = hsDecls decls
+  hsDecls (GHC.L _ (GHC.HsLet decls _ex)) = getLocalBinds decls
   hsDecls _                               = return []
 
-  replaceDecls e@(GHC.L l (GHC.HsLet decls ex)) newDecls
+  replaceDecls m@(GHC.L l (GHC.HsLet decls ex)) newDecls
     = do
-        logTr "replaceDecls HsLet"
-        modifyAnnsT (captureOrder e newDecls)
-        decls' <- replaceDecls decls newDecls
+        modifyAnnsT (captureOrderAnnKey (mkAnnKey m) newDecls)
+        decls' <- replaceLocalBinds decls newDecls
         return (GHC.L l (GHC.HsLet decls' ex))
   replaceDecls (GHC.L l (GHC.HsPar e)) newDecls
     = do
@@ -784,7 +773,7 @@ instance HasDecls (GHC.LHsExpr GHC.RdrName) where
         e' <- replaceDecls e newDecls
         return (GHC.L l (GHC.HsPar e'))
   replaceDecls old _new = error $ "replaceDecls (GHC.LHsExpr GHC.RdrName) undefined for:" ++ showGhc old
--}
+
 -- ---------------------------------------------------------------------
 {-
 instance HasDecls (GHC.LHsBinds GHC.RdrName) where
