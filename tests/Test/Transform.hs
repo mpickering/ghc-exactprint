@@ -60,8 +60,8 @@ transformLowLevelTests = [
   , mkTestModChange changeLetIn1      "LetIn1.hs"      "LetIn1"
   , mkTestModChange changeWhereIn4    "WhereIn4.hs"    "WhereIn4"
   , mkTestModChange changeAddDecl     "AddDecl.hs"     "AddDecl"
-  , mkTestModChange changeLocalDecls  "LocalDecls.hs"  "LocalDecls"
-  , mkTestModChange changeLocalDecls2 "LocalDecls2.hs" "LocalDecls2"
+  --, mkTestModChange changeLocalDecls  "LocalDecls.hs"  "LocalDecls"
+  --, mkTestModChange changeLocalDecls2 "LocalDecls2.hs" "LocalDecls2"
   , mkTestModChange changeWhereIn3a   "WhereIn3a.hs"   "WhereIn3a"
 --  , mkTestModChange changeCifToCase  "C.hs"          "C"
   ]
@@ -86,7 +86,7 @@ changeWhereIn3a ans (GHC.L l p) = do
   return (ans',GHC.L l p2)
 
 -- ---------------------------------------------------------------------
-
+{-
 -- | Add a local declaration with signature to LocalDecl, where there was no
 -- prior local decl. So it adds a "where" annotation.
 changeLocalDecls2 :: Changer
@@ -131,7 +131,6 @@ changeLocalDecls2 ans (GHC.L l p) = do
       replaceLocalBinds x = return x
   -- putStrLn $ "log:" ++ intercalate "\n" w
   return (ans',GHC.L l p')
-
 -- ---------------------------------------------------------------------
 
 -- | Add a local declaration with signature to LocalDecl
@@ -170,6 +169,7 @@ changeLocalDecls ans (GHC.L l p) = do
       replaceLocalBinds x = return x
   -- putStrLn $ "log:" ++ intercalate "\n" w
   return (ans',GHC.L l p')
+-}
 
 -- ---------------------------------------------------------------------
 
@@ -568,7 +568,7 @@ transformHighLevelTests =
   , mkTestModChange addLocaLDecl4  "AddLocalDecl4.hs"  "AddLocalDecl4"
   , mkTestModChange addLocaLDecl5  "AddLocalDecl5.hs"  "AddLocalDecl5"
 
-   mkTestModChange rmDecl1 "RmDecl1.hs" "RmDecl1"
+  , mkTestModChange rmDecl1 "RmDecl1.hs" "RmDecl1"
   , mkTestModChange rmDecl2 "RmDecl2.hs" "RmDecl2"
   , mkTestModChange rmDecl3 "RmDecl3.hs" "RmDecl3"
   , mkTestModChange rmDecl4 "RmDecl4.hs" "RmDecl4"
@@ -626,7 +626,7 @@ modifyLocalDecl p f ast = SYB.everywhereM (SYB.mkM doModLocal) ast
     doModLocal  m@(GHC.L ss _) =
          traceShow ss $
          if fromMaybe True ((ss2pos ss ==) <$> p) then
-            hsDecls m >>= f m >>= replaceDecls m
+            orderedDecls m m >>= f m >>= replaceDecls m
          else return m
 
 
@@ -715,7 +715,7 @@ addLocaLDecl5 ans lp = do
 
          transferEntryDPT d2 d3
 
-         d1' <- replaceDecls d1 [d2]
+         d1' <- modifyLocalDecl Nothing (\_ _ -> return [d2]) d1
          replaceDecls lp [s1,d1',d3]
 
   let (lp',(ans',_),_w) = runTransform ans doAddLocal
@@ -847,12 +847,10 @@ rmDecl6 ans lp = do
       doRmDecl = do
          tlDecs <- hsDecls lp
          let [d1] = tlDecs
+         let p = Just (ss2pos (GHC.getLoc d1))
+         d1' <- modifyLocalDecl p ((\_ (ss1:_sd1:sd2:sds) -> transferEntryDPT ss1 sd2
+                                                            >> return (sd2:sds))) d1
 
-         subDecs <- hsDecls d1
-         let (ss1:_sd1:sd2:sds) = subDecs
-         transferEntryDPT ss1 sd2
-
-         d1' <- replaceDecls d1 (sd2:sds)
          replaceDecls lp [d1']
 
   let (lp',(ans',_),_w) = runTransform ans doRmDecl

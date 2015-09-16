@@ -191,10 +191,7 @@ markTrailingSemi = markOutside GHC.AnnSemi AnnSemiSep
 -- | Constructs a syntax tree which contains information about which
 -- annotations are required by each element.
 markLocated :: (Annotate ast) => GHC.Located ast -> Annotated ()
-markLocated ast =
-  case cast ast :: Maybe (GHC.LHsDecl GHC.RdrName) of
-    Just d  -> markLHsDecl d
-    Nothing -> withLocated ast markAST
+markLocated ast =  withLocated ast markAST
 
 withLocated :: Data a
             => GHC.Located a
@@ -501,32 +498,28 @@ instance Annotate GHC.ModuleName where
    markAST l mname =
     markExternal l GHC.AnnVal (GHC.moduleNameString mname)
 
--- instance (GHC.DataId name,GHC.OutputableBndr name,GHC.HasOccName name,Annotate name)
-markLHsDecl :: (GHC.DataId name,GHC.OutputableBndr name,GHC.HasOccName name,Annotate name)
-            => GHC.LHsDecl name -> Annotated ()
-markLHsDecl (GHC.L l decl) =
+instance (GHC.DataId name,GHC.OutputableBndr name,GHC.HasOccName name,Annotate name)
+--markLHsDecl :: (GHC.DataId name,GHC.OutputableBndr name,GHC.HasOccName name,Annotate name)
+            => Annotate (GHC.HsDecl name) where
+  markAST l decl =
     case decl of
-      GHC.TyClD d       -> markLocated (GHC.L l d)
-      GHC.InstD d       -> markLocated (GHC.L l d)
-      GHC.DerivD d      -> markLocated (GHC.L l d)
+      GHC.TyClD d       -> markAST l d
+      GHC.InstD d       -> markAST l d
+      GHC.DerivD d      -> markAST l d
       GHC.ValD d        -> markAST l d
       GHC.SigD d        -> markAST l d
-      GHC.DefD d        -> markLocated (GHC.L l d)
-      GHC.ForD d        -> markLocated (GHC.L l d)
-      GHC.WarningD d    -> markLocated (GHC.L l d)
-      GHC.AnnD d        -> markLocated (GHC.L l d)
-      GHC.RuleD d       -> markLocated (GHC.L l d)
-      GHC.VectD d       -> markLocated (GHC.L l d)
-      GHC.SpliceD d     -> markLocated (GHC.L l d)
-      GHC.DocD d        -> markLocated (GHC.L l d)
-      GHC.RoleAnnotD d  -> markLocated (GHC.L l d)
+      GHC.DefD d        -> markAST l d
+      GHC.ForD d        -> markAST l d
+      GHC.WarningD d    -> markAST l d
+      GHC.AnnD d        -> markAST l d
+      GHC.RuleD d       -> markAST l d
+      GHC.VectD d       -> markAST l d
+      GHC.SpliceD d     -> markAST l d
+      GHC.DocD d        -> markAST l d
+      GHC.RoleAnnotD d  -> markAST l d
 #if __GLASGOW_HASKELL__ < 711
-      GHC.QuasiQuoteD d -> markLocated (GHC.L l d)
+      GHC.QuasiQuoteD d -> markAST l d
 #endif
-
-instance (GHC.DataId name,GHC.OutputableBndr name,GHC.HasOccName name,Annotate name)
-  => Annotate (GHC.HsDecl name) where
-  markAST _l _decl = error  "instance Annotate GHC.LHsDecl:rather use markLhsDecl"
 
 -- ---------------------------------------------------------------------
 

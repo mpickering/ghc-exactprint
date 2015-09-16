@@ -45,6 +45,7 @@ module Language.Haskell.GHC.ExactPrint.Transform
         , HasTransform (..)
         , HasDecls (..)
         , modifyDeclsT
+        , orderedDecls
 
         -- ** Managing lists, Transform monad
         , hsDeclsPatBind
@@ -74,7 +75,7 @@ module Language.Haskell.GHC.ExactPrint.Transform
         , setEntryDP
         , transferEntryDP
         , addTrailingComma
-        , wrapSig, wrapDecl
+        , wrapSigT, wrapDeclT
         , decl2Sig, decl2Bind
 
         ) where
@@ -174,9 +175,9 @@ cloneT ast = do
       case cast l :: Maybe GHC.SrcSpan of
         Just ss -> do
           newSpan <- lift uniqueSrcSpanT
-          lift $ modifyAnnsT (\anns -> case Map.lookup (mkAnnKeyU (GHC.L ss t)) anns of
+          lift $ modifyAnnsT (\anns -> case Map.lookup (mkAnnKey (GHC.L ss t)) anns of
                                   Nothing -> anns
-                                  Just an -> Map.insert (mkAnnKeyU (GHC.L newSpan t)) an anns)
+                                  Just an -> Map.insert (mkAnnKey (GHC.L newSpan t)) an anns)
           tell [(ss, newSpan)]
           return $ fromJust . cast  $ GHC.L newSpan t
         Nothing -> return (GHC.L l t)
@@ -187,7 +188,7 @@ cloneT ast = do
 -- the appropriate 'annSortKey' attached to the 'Annotation' for the first
 -- parameter.
 captureOrder :: (Data a) => GHC.Located a -> [GHC.Located b] -> Anns -> Anns
-captureOrder parent ls ans = captureOrderAnnKey (mkAnnKeyU parent) ls ans
+captureOrder parent ls ans = captureOrderAnnKey (mkAnnKey parent) ls ans
 
 -- |If a list has been re-ordered or had items added, capture the new order in
 -- the appropriate 'annSortKey' item of the supplied 'AnnKey'
@@ -324,7 +325,7 @@ addSimpleAnnT ast dp kds = do
   let ann = annNone { annEntryDelta = dp
                     , annsDP = kds
                     }
-  modifyAnnsT (Map.insert (mkAnnKeyU ast) ann)
+  modifyAnnsT (Map.insert (mkAnnKey ast) ann)
 
 -- ---------------------------------------------------------------------
 
@@ -393,7 +394,7 @@ setPrecedingLines ast n c anne = setEntryDP ast (DP (n,c)) anne
 -- element. This is the 'DeltaPos' ignoring any comments.
 getEntryDP :: (Data a) => Anns -> GHC.Located a -> DeltaPos
 getEntryDP anns ast =
-  case Map.lookup (mkAnnKeyU ast) anns of
+  case Map.lookup (mkAnnKey ast) anns of
     Nothing  -> DP (0,0)
     Just ann -> annTrueEntryDelta ann
 
@@ -403,9 +404,9 @@ getEntryDP anns ast =
 -- element. This is the 'DeltaPos' ignoring any comments.
 setEntryDP :: (Data a) => GHC.Located a -> DeltaPos -> Anns -> Anns
 setEntryDP ast dp anns =
-  case Map.lookup (mkAnnKeyU ast) anns of
-    Nothing  -> Map.insert (mkAnnKeyU ast) (annNone { annEntryDelta = dp}) anns
-    Just ann -> Map.insert (mkAnnKeyU ast) (ann'    { annEntryDelta = annCommentEntryDelta ann' dp}) anns
+  case Map.lookup (mkAnnKey ast) anns of
+    Nothing  -> Map.insert (mkAnnKey ast) (annNone { annEntryDelta = dp}) anns
+    Just ann -> Map.insert (mkAnnKey ast) (ann'    { annEntryDelta = annCommentEntryDelta ann' dp}) anns
       where
         ann' = setCommentEntryDP ann dp
 
@@ -429,8 +430,8 @@ transferEntryDP :: (SYB.Data a, SYB.Data b) => GHC.Located a -> GHC.Located b ->
 transferEntryDP a b anns = anns2
   where
     maybeAnns = do -- Maybe monad
-      anA <- Map.lookup (mkAnnKeyU a) anns
-      anB <- Map.lookup (mkAnnKeyU b) anns
+      anA <- Map.lookup (mkAnnKey a) anns
+      anB <- Map.lookup (mkAnnKey b) anns
       let anB'  = Ann
             { annEntryDelta        = DP (0,0) -- Need to adjust for comments after
             -- , annPriorComments     = annPriorComments     anA ++ annPriorComments     anB
@@ -441,9 +442,9 @@ transferEntryDP a b anns = anns2
             , annSortKey           = annSortKey      anB
             , annCapturedSpan      = annCapturedSpan anB
             }
-      return ((Map.insert (mkAnnKeyU b) anB' anns),annLeadingCommentEntryDelta anA)
+      return ((Map.insert (mkAnnKey b) anB' anns),annLeadingCommentEntryDelta anA)
     (anns',dp) = fromMaybe
-                  (error $ "transferEntryDP: lookup failed (a,b)=" ++ show (mkAnnKeyU a,mkAnnKeyU b))
+                  (error $ "transferEntryDP: lookup failed (a,b)=" ++ show (mkAnnKey a,mkAnnKey b))
                   maybeAnns
     anns2 = setEntryDP b dp anns'
 
@@ -451,11 +452,11 @@ transferEntryDP a b anns = anns2
 
 addTrailingComma :: (SYB.Data a) => GHC.Located a -> DeltaPos -> Anns -> Anns
 addTrailingComma a dp anns =
-  case Map.lookup (mkAnnKeyU a) anns of
+  case Map.lookup (mkAnnKey a) anns of
     Nothing -> anns
     Just an ->
       case find isAnnComma (annsDP an) of
-        Nothing -> Map.insert (mkAnnKeyU a) (an { annsDP = annsDP an ++ [(G GHC.AnnComma,dp)]}) anns
+        Nothing -> Map.insert (mkAnnKey a) (an { annsDP = annsDP an ++ [(G GHC.AnnComma,dp)]}) anns
         Just _  -> anns
       where
         isAnnComma (G GHC.AnnComma,_) = True
@@ -465,12 +466,12 @@ addTrailingComma a dp anns =
 
 removeTrailingComma :: (SYB.Data a) => GHC.Located a -> Anns -> Anns
 removeTrailingComma a anns =
-  case Map.lookup (mkAnnKeyU a) anns of
+  case Map.lookup (mkAnnKey a) anns of
     Nothing -> anns
     Just an ->
       case find isAnnComma (annsDP an) of
         Nothing -> anns
-        Just _  -> Map.insert (mkAnnKeyU a) (an { annsDP = filter (not.isAnnComma) (annsDP an) }) anns
+        Just _  -> Map.insert (mkAnnKey a) (an { annsDP = filter (not.isAnnComma) (annsDP an) }) anns
       where
         isAnnComma (G GHC.AnnComma,_) = True
         isAnnComma _                  = False
@@ -484,8 +485,8 @@ removeTrailingComma a anns =
 balanceComments :: (Data a,Data b) => GHC.Located a -> GHC.Located b -> Transform ()
 balanceComments first second = do
   let
-    k1 = mkAnnKeyU first
-    k2 = mkAnnKeyU second
+    k1 = mkAnnKey first
+    k2 = mkAnnKey second
     moveComments p ans = ans'
       where
         an1 = gfromJust "balanceComments k1" $ Map.lookup k1 ans
@@ -510,8 +511,8 @@ balanceComments first second = do
 balanceTrailingComments :: (Data a,Data b) => GHC.Located a -> GHC.Located b -> Transform [(Comment, DeltaPos)]
 balanceTrailingComments first second = do
   let
-    k1 = mkAnnKeyU first
-    k2 = mkAnnKeyU second
+    k1 = mkAnnKey first
+    k2 = mkAnnKey second
     moveComments p ans = (ans',move)
       where
         an1 = gfromJust "balanceTrailingComments k1" $ Map.lookup k1 ans
@@ -542,8 +543,8 @@ moveTrailingComments :: (Data a,Data b)
                      => GHC.Located a -> GHC.Located b -> Transform ()
 moveTrailingComments first second = do
   let
-    k1 = mkAnnKeyU first
-    k2 = mkAnnKeyU second
+    k1 = mkAnnKey first
+    k2 = mkAnnKey second
     moveComments ans = ans'
       where
         an1 = gfromJust "moveTrailingComments k1" $ Map.lookup k1 ans
@@ -565,7 +566,7 @@ insertAt :: (Data ast, HasDecls (GHC.Located ast))
               -> Transform (GHC.Located ast)
 insertAt f m decl = do
   let newKey = GHC.getLoc decl
-      modKey = mkAnnKeyU m
+      modKey = mkAnnKey m
       newValue a@Ann{..} = a { annSortKey = f newKey <$> annSortKey }
   oldDecls <- hsDecls m
   modifyAnnsT (Map.adjust newValue modKey)
@@ -585,7 +586,7 @@ insertAfter, insertBefore :: (Data ast, HasDecls (GHC.Located ast))
                           -> GHC.Located ast
                           -> GHC.LHsDecl GHC.RdrName
                           -> Transform (GHC.Located ast)
--- insertAfter (mkAnnKeyU -> k) = insertAt findAfter
+-- insertAfter (mkAnnKey -> k) = insertAt findAfter
 insertAfter (GHC.getLoc -> k) = insertAt findAfter
   where
     findAfter x xs =
@@ -696,9 +697,9 @@ instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
           noWhere _                  = True
 
           removeWhere mkds =
-            case Map.lookup (mkAnnKeyU m) mkds of
+            case Map.lookup (mkAnnKey m) mkds of
               Nothing -> error "wtf"
-              Just ann -> Map.insert (mkAnnKeyU m) ann1 mkds
+              Just ann -> Map.insert (mkAnnKey m) ann1 mkds
                 where
                   ann1 = ann { annsDP = filter noWhere (annsDP ann)
                                  }
@@ -716,9 +717,9 @@ instance HasDecls (GHC.LMatch GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
           GHC.EmptyLocalBinds -> do
             let
               addWhere mkds =
-                case Map.lookup (mkAnnKeyU m) mkds of
+                case Map.lookup (mkAnnKey m) mkds of
                   Nothing -> error "wtf"
-                  Just ann -> Map.insert (mkAnnKeyU m) ann1 mkds
+                  Just ann -> Map.insert (mkAnnKey m) ann1 mkds
                     where
                       mkComs a =
                         map (\(c,dp) -> (AnnComment c, dp)) (annFollowingComments a)
