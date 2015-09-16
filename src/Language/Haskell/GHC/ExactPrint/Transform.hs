@@ -660,6 +660,10 @@ instance HasDecls GHC.ParsedSource where
 -- ---------------------------------------------------------------------
 -- | Note that this should only be used on PatBinds
 
+instance HasDecls (GHC.LHsDecl GHC.RdrName) where
+    hsDecls d = hsDeclsPatBind d
+    replaceDecls d newDs = replaceDeclsPatBind d newDs
+
 hsDeclsPatBind :: GHC.LHsDecl GHC.RdrName -> Transform [GHC.LHsDecl GHC.RdrName]
 hsDeclsPatBind (GHC.L _ (GHC.ValD (GHC.PatBind  {pat_rhs}))) =
   let (GHC.GRHSs _ lb) = pat_rhs in getLocalBinds lb
@@ -791,12 +795,16 @@ instance HasDecls (GHC.LHsExpr GHC.RdrName) where
         modifyAnnsT (captureOrderAnnKey (mkAnnKey m) newDecls)
         decls' <- replaceLocalBinds decls newDecls
         return (GHC.L l (GHC.HsLet decls' ex))
-  replaceDecls (GHC.L l (GHC.HsPar e)) newDecls
+  replaceDecls old _new = return old
+
+instance HasDecls (GHC.LStmt GHC.RdrName (GHC.LHsExpr GHC.RdrName)) where
+  hsDecls (GHC.L l (GHC.LetStmt lb))          = getLocalBinds lb
+
+  replaceDecls (GHC.L l (GHC.LetStmt lb)) newDecls
     = do
-        logTr "replaceDecls HsPar"
-        e' <- replaceDecls e newDecls
-        return (GHC.L l (GHC.HsPar e'))
-  replaceDecls old _new = error $ "replaceDecls (GHC.LHsExpr GHC.RdrName) undefined for:" ++ showGhc old
+      lb' <- replaceLocalBinds lb newDecls
+      return (GHC.L l (GHC.LetStmt lb'))
+  replaceDecls x newDecls = return x
 
 -- ---------------------------------------------------------------------
 {-
